@@ -35,16 +35,17 @@
 
             (> (count vals) 1)
             (go (ex-info "This key has a conflict." {:type :multiple-values
-                                                     :key fkey}))
+                                                     :key fkey
+                                                     :vals vals}))
 
             :else
             (let [res-ch (chan)]
               (try
                 (let [bais (ByteArrayInputStream. (:value (first vals)))]
-                  (put! res-ch
-                        (get-in
-                         (second (-deserialize serializer read-handlers bais))
-                         rkey)))
+                  (when-let [res (get-in
+                                  (second (-deserialize serializer read-handlers bais))
+                                  rkey)]
+                    (put! res-ch res)))
                 res-ch
                 (catch Exception e
                   (put! res-ch (ex-info "Could not read key."
@@ -71,11 +72,9 @@
                   new (if (empty? rkey)
                         (up-fn old)
                         (update-in old rkey up-fn))]
-              (if new
-                (let [baos (ByteArrayOutputStream.)]
-                  (-serialize serializer baos write-handlers [key-vec new])
-                  (kv/store conn (:name bucket-opts) id (.toByteArray baos)))
-                (kv/delete conn (:name bucket-opts) id))
+              (let [baos (ByteArrayOutputStream.)]
+                (-serialize serializer baos write-handlers [key-vec new])
+                (kv/store conn (:name bucket-opts) id (.toByteArray baos)))
               (put! res-ch [(get-in old rkey)
                             (get-in new rkey)]))
             res-ch
@@ -87,6 +86,17 @@
               res-ch)
             (finally
               (close! res-ch)))))))
+  (-dissoc [this key]
+    (go
+      (let [id (str (uuid key))]
+        (try
+          (kv/delete conn (:name bucket-opts) id)
+          nil
+          (catch Exception e
+            (ex-info "Could not delete key."
+                     {:type :delete-error
+                      :key key
+                      :exception e}))))))
 
   PBinaryAsyncKeyValueStore
   (-bget [this key locked-cb]
